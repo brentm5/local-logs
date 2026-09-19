@@ -1,0 +1,282 @@
+import type { Database } from "bun:sqlite";
+import { openDb } from "./db";
+import type { LogRecordInput, OffsetState, StoredLogRecord, Tags } from "./types";
+
+const FLUSH_INTERVAL_MS = 100;
+const FLUSH_BATCH_SIZE = 500;
+
+export interface TimeRangeQuery {
+  from: number;
+  to: number;
+  sourceId?: string;
+}
+
+interface LogRecordRow {
+  id: number;
+  ts: number;
+  source_id: string;
+  level: string | null;
+  message: string;
+  raw: string;
+  fields_json: string;
+}
+
+/**
+ * The SQLite-backed store: schema, batched writes, and queries by time
+ * range, tag, and full-text match. See ADR-0002 and ADR-0003.
+ */
+export class Store {
+  private readonly db: Database;
+  private readonly insertLogRecordStmt;
+  private readonly insertFtsStmt;
+  private readonly insertTagStmt;
+  private readonly selectTagsStmt;
+  private readonly upsertOffsetStmt;
+  private readonly selectOffsetStmt;
+  private readonly selectByTimeRangeStmt;
+  private readonly selectByTagStmt;
+  private readonly selectByTextStmt;
+  private readonly runInsertBatch;
+
+  private queue: LogRecordInput[] = [];
+  private flushTimer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(path: string) {
+    this.db = openDb(path);
+
+    this.insertLogRecordStmt = this.db.prepare(
+      `INSERT INTO log_records (ts, source_id, level, message, raw, fields_json)
+       VALUES ($ts, $source_id, $level, $message, $raw, $fields_json)`,
+    );
+    this.insertFtsStmt = this.db.prepare(
+      `INSERT INTO log_records_fts (rowid, message) VALUES ($rowid, $message)`,
+    );
+    this.insertTagStmt = this.db.prepare(
+      `INSERT INTO tags (log_record_id, key, value) VALUES ($log_record_id, $key, $value)`,
+    );
+    this.selectTagsStmt = this.db.prepare(
+      `SELECT key, value FROM tags WHERE log_record_id = $log_record_id`,
+    );
+    this.upsertOffsetStmt = this.db.prepare(
+      `INSERT INTO offsets (source_id, inode, size, offset)
+       VALUES ($source_id, $inode, $size, $offset)
+       ON CONFLICT(source_id) DO UPDATE SET
+         inode = excluded.inode,
+         size = excluded.size,
+         offset = excluded.offset`,
+    );
+    this.selectOffsetStmt = this.db.prepare(
+      `SELECT source_id, inode, size, offset FROM offsets WHERE source_id = $source_id`,
+    );
+    // $source_id IS NULL matches any source, so one statement covers both
+    // the scoped and unscoped time-range query.
+    this.selectByTimeRangeStmt = this.db.prepare(
+      `SELECT id, ts, source_id, level, message, raw, fields_json
+       FROM log_records
+       WHERE ts >= $from AND ts <= $to
+         AND ($source_id IS NULL OR source_id = $source_id)
+       ORDER BY ts ASC`,
+    );
+    this.selectByTagStmt = this.db.prepare(
+      `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
+       FROM log_records r
+       JOIN tags t ON t.log_record_id = r.id
+       WHERE t.key = $key AND t.value = $value
+       ORDER BY r.ts ASC`,
+    );
+    this.selectByTextStmt = this.db.prepare(
+      `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
+       FROM log_records_fts f
+       JOIN log_records r ON r.id = f.rowid
+       WHERE f.message MATCH $term
+       ORDER BY r.ts ASC`,
+    );
+
+    // db.transaction() must wrap a function that closes over the prepared
+    // statements above, and those statements can't exist before `this.db`
+    // is open — so this has to be assembled here, after both are ready,
+    // rather than as a plain method (which would either re-prepare
+    // statements per call or need them passed in awkwardly).
+    this.runInsertBatch = this.db.transaction(this.insertBatchTx.bind(this));
+  }
+
+  private insertBatchTx(records: LogRecordInput[]): void {
+    for (const record of records) {
+      const { lastInsertRowid } = this.insertLogRecordStmt.run({
+        $ts: record.ts,
+        $source_id: record.sourceId,
+        $level: record.level,
+        $message: record.message,
+        $raw: record.raw,
+        $fields_json: JSON.stringify(record.fields),
+      });
+      const logRecordId = Number(lastInsertRowid);
+
+      this.insertFtsStmt.run({ $rowid: logRecordId, $message: record.message });
+
+      for (const [key, value] of Object.entries(record.tags)) {
+        this.insertTagStmt.run({ $log_record_id: logRecordId, $key: key, $value: value });
+      }
+    }
+  }
+
+  /** Access to the underlying bun:sqlite Database, for diagnostics/tests. */
+  raw(): Database {
+    return this.db;
+  }
+
+  /**
+   * Writes a batch of log records in one transaction. Use this directly for
+   * a caller-controlled batch, or `enqueue` for the time/size-triggered
+   * batching described in ADR-0003.
+   */
+  async insertBatch(records: LogRecordInput[]): Promise<void> {
+    if (records.length === 0) {
+      return;
+    }
+    this.runInsertBatch(records);
+  }
+
+  /**
+   * Buffers a log record for the next automatic flush, which happens every
+   * ~100ms or once 500 records have queued, whichever comes first. The
+   * flush timer runs continuously once started (see `close` for teardown),
+   * so `flush` itself never has to touch it.
+   */
+  enqueue(record: LogRecordInput): void {
+    this.queue.push(record);
+
+    if (this.queue.length >= FLUSH_BATCH_SIZE) {
+      this.flush();
+      return;
+    }
+
+    if (!this.flushTimer) {
+      this.flushTimer = setInterval(() => this.flush(), FLUSH_INTERVAL_MS);
+      // Don't hold the process open just for the flush timer.
+      this.flushTimer.unref?.();
+    }
+  }
+
+  /** Flushes any queued log records immediately, e.g. on shutdown. */
+  flush(): void {
+    if (this.queue.length === 0) {
+      return;
+    }
+    const pending = this.queue;
+    this.queue = [];
+    this.runInsertBatch(pending);
+  }
+
+  queryByTimeRange(query: TimeRangeQuery): StoredLogRecord[] {
+    const rows = this.selectByTimeRangeStmt.all({
+      $from: query.from,
+      $to: query.to,
+      $source_id: query.sourceId ?? null,
+    }) as LogRecordRow[];
+
+    return this.hydrateAll(rows);
+  }
+
+  queryByTag(key: string, value: string): StoredLogRecord[] {
+    const rows = this.selectByTagStmt.all({ $key: key, $value: value }) as LogRecordRow[];
+
+    return this.hydrateAll(rows);
+  }
+
+  queryByText(term: string): StoredLogRecord[] {
+    const rows = this.selectByTextStmt.all({ $term: term }) as LogRecordRow[];
+
+    return this.hydrateAll(rows);
+  }
+
+  getOffset(sourceId: string): OffsetState | undefined {
+    const row = this.selectOffsetStmt.get({ $source_id: sourceId }) as
+      | { source_id: string; inode: number; size: number; offset: number }
+      | null;
+
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      sourceId: row.source_id,
+      inode: row.inode,
+      size: row.size,
+      offset: row.offset,
+    };
+  }
+
+  setOffset(state: OffsetState): void {
+    this.upsertOffsetStmt.run({
+      $source_id: state.sourceId,
+      $inode: state.inode,
+      $size: state.size,
+      $offset: state.offset,
+    });
+  }
+
+  /**
+   * Hydrates a set of rows into `StoredLogRecord`s, fetching all of their
+   * tags in one query rather than one query per row.
+   */
+  private hydrateAll(rows: LogRecordRow[]): StoredLogRecord[] {
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const tagsByRecordId = new Map<number, Tags>();
+    if (rows.length === 1) {
+      tagsByRecordId.set(rows[0]!.id, this.selectTagsForOne(rows[0]!.id));
+    } else {
+      const placeholders = rows.map((_, i) => `$id${i}`).join(", ");
+      const params: Record<string, number> = {};
+      rows.forEach((row, i) => {
+        params[`$id${i}`] = row.id;
+      });
+      const tagRows = this.db
+        .query(
+          `SELECT log_record_id, key, value FROM tags WHERE log_record_id IN (${placeholders})`,
+        )
+        .all(params) as { log_record_id: number; key: string; value: string }[];
+
+      for (const tagRow of tagRows) {
+        const tags = tagsByRecordId.get(tagRow.log_record_id) ?? {};
+        tags[tagRow.key] = tagRow.value;
+        tagsByRecordId.set(tagRow.log_record_id, tags);
+      }
+    }
+
+    return rows.map((row) => ({
+      id: row.id,
+      ts: row.ts,
+      sourceId: row.source_id,
+      level: row.level,
+      message: row.message,
+      raw: row.raw,
+      fields: JSON.parse(row.fields_json),
+      tags: tagsByRecordId.get(row.id) ?? {},
+    }));
+  }
+
+  private selectTagsForOne(logRecordId: number): Tags {
+    const tagRows = this.selectTagsStmt.all({ $log_record_id: logRecordId }) as {
+      key: string;
+      value: string;
+    }[];
+    const tags: Tags = {};
+    for (const tagRow of tagRows) {
+      tags[tagRow.key] = tagRow.value;
+    }
+    return tags;
+  }
+
+  close(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    this.flush();
+    this.db.close();
+  }
+}

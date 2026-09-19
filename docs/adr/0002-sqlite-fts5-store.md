@@ -19,8 +19,8 @@ single-binary goal.
 
 SQLite via `bun:sqlite`, single database file, with:
 
-- `records` table with promoted columns `(id, ts, source_id, level, message,
-  raw, fields_json)`.
+- `log_records` table with promoted columns `(id, ts, source_id, level,
+  message, raw, fields_json)`.
 - `tags` table `(record_id, key, value)` for open key/value attributes.
 - FTS5 virtual table over `message`, **contentless** (`content=''`).
 - Indexes on `(ts)` and `(source_id, ts)`.
@@ -32,8 +32,8 @@ in essentially every query — time ordering, source selector, level filter — 
 resolving them through the tags table would mean a join on the hot path.
 
 FTS5 is contentless so the index does not duplicate message text. This roughly
-halves on-disk footprint, at the cost of needing the `records` row to display a
-hit — which queries do anyway.
+halves on-disk footprint, at the cost of needing the `log_records` row to
+display a hit — which queries do anyway.
 
 ## Consequences
 
