@@ -2,6 +2,7 @@ import { Command, CommanderError } from "commander";
 
 export interface CliArgs {
   configPath: string | undefined;
+  replay: boolean;
 }
 
 /** Thrown when Commander has already printed help/version and the process should exit 0. */
@@ -16,6 +17,7 @@ export function parseArgs(argv: string[]): CliArgs {
     .name("local-logs")
     .description("Local log viewer for development workflows")
     .option("--config <path>", "path to config.toml (defaults to $XDG_CONFIG_HOME/local-logs/config.toml)")
+    .option("--replay", "start first-seen files at 0 instead of at end (tail semantics)", false)
     .exitOverride()
     .configureOutput({ writeErr: () => {} });
 
@@ -28,6 +30,6 @@ export function parseArgs(argv: string[]): CliArgs {
     throw err;
   }
 
-  const { config } = program.opts<{ config?: string }>();
-  return { configPath: config };
+  const { config, replay } = program.opts<{ config?: string; replay: boolean }>();
+  return { configPath: config, replay };
 }
