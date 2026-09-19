@@ -97,4 +97,24 @@ tags = { service = "api" }
   test("throws on malformed TOML", () => {
     expect(() => parseConfig("this is not valid toml [[[")).toThrow();
   });
+
+  test("throws when a tag value is not a string", () => {
+    expect(() =>
+      parseConfig(`
+[[source]]
+path = "a.log"
+tags = { count = 5 }
+`),
+    ).toThrow();
+  });
+
+  test("throws when pattern is not a string", () => {
+    expect(() =>
+      parseConfig(`
+[[source]]
+path = "a.log"
+pattern = true
+`),
+    ).toThrow();
+  });
 });
