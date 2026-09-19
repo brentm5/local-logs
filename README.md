@@ -6,10 +6,8 @@ or search them from a web UI — like `tail -f` with structured search
 bolted on, scoped to "what am I seeing while I develop/test locally."
 Ships as a single compiled binary.
 
-This repo is an early scaffold: config loading and the CLI entry point
-exist; the watcher, parser, store, query API, and web UI described in
-[`CONTEXT.md`](./CONTEXT.md) are still being built. Running the
-binary today parses and prints the resolved config, nothing more.
+See [`CONTEXT.md`](./CONTEXT.md) for the full product shape and v1
+scope.
 
 ## Quickstart
 
