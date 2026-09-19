@@ -1,4 +1,4 @@
-import { parseArgs } from "./cli";
+import { CliExit, parseArgs } from "./cli";
 import { loadConfig } from "./config/load";
 
 async function main() {
@@ -19,6 +19,9 @@ async function main() {
 }
 
 main().catch((err) => {
+  if (err instanceof CliExit) {
+    return;
+  }
   console.error(`local-logs: ${(err as Error).message}`);
   process.exit(1);
 });

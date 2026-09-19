@@ -1,23 +1,33 @@
+import { Command, CommanderError } from "commander";
+
 export interface CliArgs {
   configPath: string | undefined;
 }
 
-export function parseArgs(argv: string[]): CliArgs {
-  let configPath: string | undefined;
+/** Thrown when Commander has already printed help/version and the process should exit 0. */
+export class CliExit extends Error {
+  constructor() {
+    super("local-logs: exit requested");
+  }
+}
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--config") {
-      const value = argv[i + 1];
-      if (value === undefined) {
-        throw new Error("--config requires a path argument");
-      }
-      configPath = value;
-      i++;
-    } else if (arg.startsWith("--config=")) {
-      configPath = arg.slice("--config=".length);
+export function parseArgs(argv: string[]): CliArgs {
+  const program = new Command()
+    .name("local-logs")
+    .description("Local log viewer for development workflows")
+    .option("--config <path>", "path to local-logs.toml (defaults to ./local-logs.toml)")
+    .exitOverride()
+    .configureOutput({ writeErr: () => {} });
+
+  try {
+    program.parse(argv, { from: "user" });
+  } catch (err) {
+    if (err instanceof CommanderError && (err.code === "commander.helpDisplayed" || err.code === "commander.version")) {
+      throw new CliExit();
     }
+    throw err;
   }
 
-  return { configPath };
+  const { config } = program.opts<{ config?: string }>();
+  return { configPath: config };
 }

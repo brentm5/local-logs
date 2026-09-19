@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseArgs } from "../src/cli";
+import { CliExit, parseArgs } from "../src/cli";
 
 describe("parseArgs", () => {
   test("returns undefined configPath when --config is absent", () => {
@@ -16,5 +16,13 @@ describe("parseArgs", () => {
 
   test("throws when --config is missing its value", () => {
     expect(() => parseArgs(["--config"])).toThrow(/--config/);
+  });
+
+  test("throws CliExit on --help without printing an error", () => {
+    expect(() => parseArgs(["--help"])).toThrow(CliExit);
+  });
+
+  test("throws on an unknown option", () => {
+    expect(() => parseArgs(["--bogus"])).toThrow();
   });
 });

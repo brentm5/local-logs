@@ -13,5 +13,8 @@
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
   }
 }
