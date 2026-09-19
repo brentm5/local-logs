@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
+import { defaultConfigPath, type XdgEnv } from "../xdg";
 import { parseConfig } from "./parse";
 import type { LoadedConfig, ResolvedSource } from "./types";
-import { defaultConfigPath, type XdgEnv } from "./xdg";
 
 export interface LoadConfigOptions {
   cwd: string;

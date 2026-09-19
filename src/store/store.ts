@@ -33,6 +33,9 @@ export class Store {
   private readonly selectTagsStmt;
   private readonly upsertOffsetStmt;
   private readonly selectOffsetStmt;
+  private readonly selectByTimeRangeStmt;
+  private readonly selectByTagStmt;
+  private readonly selectByTextStmt;
   private readonly runInsertBatch;
 
   private queue: LogRecordInput[] = [];
@@ -64,6 +67,29 @@ export class Store {
     );
     this.selectOffsetStmt = this.db.prepare(
       `SELECT source_id, inode, size, offset FROM offsets WHERE source_id = $source_id`,
+    );
+    // $source_id IS NULL matches any source, so one statement covers both
+    // the scoped and unscoped time-range query.
+    this.selectByTimeRangeStmt = this.db.prepare(
+      `SELECT id, ts, source_id, level, message, raw, fields_json
+       FROM log_records
+       WHERE ts >= $from AND ts <= $to
+         AND ($source_id IS NULL OR source_id = $source_id)
+       ORDER BY ts ASC`,
+    );
+    this.selectByTagStmt = this.db.prepare(
+      `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
+       FROM log_records r
+       JOIN tags t ON t.log_record_id = r.id
+       WHERE t.key = $key AND t.value = $value
+       ORDER BY r.ts ASC`,
+    );
+    this.selectByTextStmt = this.db.prepare(
+      `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
+       FROM log_records_fts f
+       JOIN log_records r ON r.id = f.rowid
+       WHERE f.message MATCH $term
+       ORDER BY r.ts ASC`,
     );
 
     // db.transaction() must wrap a function that closes over the prepared
@@ -113,7 +139,9 @@ export class Store {
 
   /**
    * Buffers a log record for the next automatic flush, which happens every
-   * ~100ms or once 500 records have queued, whichever comes first.
+   * ~100ms or once 500 records have queued, whichever comes first. The
+   * flush timer runs continuously once started (see `close` for teardown),
+   * so `flush` itself never has to touch it.
    */
   enqueue(record: LogRecordInput): void {
     this.queue.push(record);
@@ -138,61 +166,28 @@ export class Store {
     const pending = this.queue;
     this.queue = [];
     this.runInsertBatch(pending);
-
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer);
-      this.flushTimer = undefined;
-    }
   }
 
   queryByTimeRange(query: TimeRangeQuery): StoredLogRecord[] {
-    const rows = query.sourceId
-      ? (this.db
-          .query(
-            `SELECT id, ts, source_id, level, message, raw, fields_json
-             FROM log_records
-             WHERE ts >= $from AND ts <= $to AND source_id = $source_id
-             ORDER BY ts ASC`,
-          )
-          .all({ $from: query.from, $to: query.to, $source_id: query.sourceId }) as LogRecordRow[])
-      : (this.db
-          .query(
-            `SELECT id, ts, source_id, level, message, raw, fields_json
-             FROM log_records
-             WHERE ts >= $from AND ts <= $to
-             ORDER BY ts ASC`,
-          )
-          .all({ $from: query.from, $to: query.to }) as LogRecordRow[]);
+    const rows = this.selectByTimeRangeStmt.all({
+      $from: query.from,
+      $to: query.to,
+      $source_id: query.sourceId ?? null,
+    }) as LogRecordRow[];
 
-    return rows.map((row) => this.hydrate(row));
+    return this.hydrateAll(rows);
   }
 
   queryByTag(key: string, value: string): StoredLogRecord[] {
-    const rows = this.db
-      .query(
-        `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
-         FROM log_records r
-         JOIN tags t ON t.log_record_id = r.id
-         WHERE t.key = $key AND t.value = $value
-         ORDER BY r.ts ASC`,
-      )
-      .all({ $key: key, $value: value }) as LogRecordRow[];
+    const rows = this.selectByTagStmt.all({ $key: key, $value: value }) as LogRecordRow[];
 
-    return rows.map((row) => this.hydrate(row));
+    return this.hydrateAll(rows);
   }
 
   queryByText(term: string): StoredLogRecord[] {
-    const rows = this.db
-      .query(
-        `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
-         FROM log_records_fts f
-         JOIN log_records r ON r.id = f.rowid
-         WHERE f.message MATCH $term
-         ORDER BY r.ts ASC`,
-      )
-      .all({ $term: term }) as LogRecordRow[];
+    const rows = this.selectByTextStmt.all({ $term: term }) as LogRecordRow[];
 
-    return rows.map((row) => this.hydrate(row));
+    return this.hydrateAll(rows);
   }
 
   getOffset(sourceId: string): OffsetState | undefined {
@@ -221,17 +216,38 @@ export class Store {
     });
   }
 
-  private hydrate(row: LogRecordRow): StoredLogRecord {
-    const tagRows = this.selectTagsStmt.all({ $log_record_id: row.id }) as {
-      key: string;
-      value: string;
-    }[];
-    const tags: Tags = {};
-    for (const tagRow of tagRows) {
-      tags[tagRow.key] = tagRow.value;
+  /**
+   * Hydrates a set of rows into `StoredLogRecord`s, fetching all of their
+   * tags in one query rather than one query per row.
+   */
+  private hydrateAll(rows: LogRecordRow[]): StoredLogRecord[] {
+    if (rows.length === 0) {
+      return [];
     }
 
-    return {
+    const tagsByRecordId = new Map<number, Tags>();
+    if (rows.length === 1) {
+      tagsByRecordId.set(rows[0]!.id, this.selectTagsForOne(rows[0]!.id));
+    } else {
+      const placeholders = rows.map((_, i) => `$id${i}`).join(", ");
+      const params: Record<string, number> = {};
+      rows.forEach((row, i) => {
+        params[`$id${i}`] = row.id;
+      });
+      const tagRows = this.db
+        .query(
+          `SELECT log_record_id, key, value FROM tags WHERE log_record_id IN (${placeholders})`,
+        )
+        .all(params) as { log_record_id: number; key: string; value: string }[];
+
+      for (const tagRow of tagRows) {
+        const tags = tagsByRecordId.get(tagRow.log_record_id) ?? {};
+        tags[tagRow.key] = tagRow.value;
+        tagsByRecordId.set(tagRow.log_record_id, tags);
+      }
+    }
+
+    return rows.map((row) => ({
       id: row.id,
       ts: row.ts,
       sourceId: row.source_id,
@@ -239,8 +255,20 @@ export class Store {
       message: row.message,
       raw: row.raw,
       fields: JSON.parse(row.fields_json),
-      tags,
-    };
+      tags: tagsByRecordId.get(row.id) ?? {},
+    }));
+  }
+
+  private selectTagsForOne(logRecordId: number): Tags {
+    const tagRows = this.selectTagsStmt.all({ $log_record_id: logRecordId }) as {
+      key: string;
+      value: string;
+    }[];
+    const tags: Tags = {};
+    for (const tagRow of tagRows) {
+      tags[tagRow.key] = tagRow.value;
+    }
+    return tags;
   }
 
   close(): void {
