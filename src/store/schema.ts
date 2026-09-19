@@ -22,6 +22,19 @@ export function initSchema(db: Database): void {
   // `tags` because it's on the hot path for nearly every query — the UI's
   // source selector and live tail both filter by it — and resolving it
   // through the tags table would mean a join on that path (ADR-0002).
+  //
+  // fields_json: the full parsed record root, JSON-encoded. Plain TEXT, not
+  // a declared JSON/JSONB column — SQLite has no dedicated JSON storage
+  // class, and its JSON1 functions (json_extract, ->, ->>) work directly on
+  // a TEXT column, including under an expression index, e.g.
+  // `SELECT fields_json ->> '$.status' FROM records` or
+  // `CREATE INDEX ... ON records (json_extract(fields_json, '$.status'))`.
+  // So per-field querying into `fields` doesn't require a schema change.
+  // JSONB (SQLite's binary JSON storage, >=3.45) would only be worth
+  // revisiting if `fields_json` access becomes a measured hot path — it
+  // trades ~3x faster re-parsing and a smaller on-disk footprint for
+  // losing plain-text readability via `SELECT *`, and bun:sqlite doesn't
+  // encode into it automatically.
   db.run(`
     CREATE TABLE IF NOT EXISTS records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
