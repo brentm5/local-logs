@@ -145,11 +145,11 @@ describe("parseLine", () => {
       });
     });
 
-    test("omits the level tag when no level was extracted", () => {
+    test("defaults the level tag to info when no level was extracted", () => {
       const record = parseLine(makeInput({ line: "no level here" }));
 
-      expect(record.tags).toEqual({ file: "/var/log/app.log", source_id: "src-1" });
-      expect(record.level).toBeNull();
+      expect(record.tags).toEqual({ file: "/var/log/app.log", source_id: "src-1", level: "info" });
+      expect(record.level).toBe("info");
     });
   });
 
@@ -165,6 +165,27 @@ describe("parseLine", () => {
       const record = parseLine(makeInput({ line: 'lvl=WARN msg="disk almost full"' }));
 
       expect(record.level).toBe("warn");
+    });
+
+    test("defaults to info when no level field is present", () => {
+      const record = parseLine(makeInput({ line: '{"message":"just chatting"}' }));
+
+      expect(record.level).toBe("info");
+    });
+
+    test("defaults to info when the level value is unrecognized", () => {
+      const record = parseLine(makeInput({ line: '{"message":"???","level":"weird"}' }));
+
+      expect(record.level).toBe("info");
+    });
+
+    test("normalizes common aliases onto the canonical five levels", () => {
+      expect(parseLine(makeInput({ line: '{"level":"trace","message":"x"}' })).level).toBe("debug");
+      expect(parseLine(makeInput({ line: '{"level":"warning","message":"x"}' })).level).toBe("warn");
+      expect(parseLine(makeInput({ line: '{"level":"err","message":"x"}' })).level).toBe("error");
+      expect(parseLine(makeInput({ line: '{"level":"critical","message":"x"}' })).level).toBe("fatal");
+      expect(parseLine(makeInput({ line: '{"level":"panic","message":"x"}' })).level).toBe("fatal");
+      expect(parseLine(makeInput({ line: '{"level":"fatal","message":"x"}' })).level).toBe("fatal");
     });
   });
 

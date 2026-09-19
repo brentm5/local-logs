@@ -15,9 +15,11 @@ import type { ParseInput } from "./types";
  * 4. Raw: `{ message: <line> }`.
  *
  * First match wins. `raw` always preserves the original line untouched. `msg`
- * is normalized to `message`; `level` is promoted to a tag and lowercased.
- * Tags are merged from three origins: watcher-assigned (`file`, `source_id`),
- * user-defined (config), and parser-extracted (`level`).
+ * is normalized to `message`; `level` is promoted to a tag, normalized to
+ * one of `debug`/`info`/`warn`/`error`/`fatal`, and defaults to `info` when
+ * no level can be extracted. Tags are merged from three origins:
+ * watcher-assigned (`file`, `source_id`), user-defined (config), and
+ * parser-extracted (`level`).
  */
 export function parseLine(input: ParseInput): LogRecordInput {
   const root = parseRoot(input.line, input.pattern);
@@ -29,10 +31,8 @@ export function parseLine(input: ParseInput): LogRecordInput {
     ...input.tags,
     file: input.file,
     source_id: input.sourceId,
+    level,
   };
-  if (level !== null) {
-    tags.level = level;
-  }
 
   return {
     ts,
