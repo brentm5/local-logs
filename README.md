@@ -6,11 +6,9 @@ or search them from a web UI — like `tail -f` with structured search
 bolted on, scoped to "what am I seeing while I develop/test locally."
 Ships as a single compiled binary.
 
-## Status
-
-Early scaffold. Config loading and the CLI entry point exist; the
-watcher, parser, store, query API, and web UI described in
-[`CONTEXT.md`](./CONTEXT.md) are not yet implemented. Running the
+This repo is an early scaffold: config loading and the CLI entry point
+exist; the watcher, parser, store, query API, and web UI described in
+[`CONTEXT.md`](./CONTEXT.md) are still being built. Running the
 binary today parses and prints the resolved config, nothing more.
 
 ## Quickstart
@@ -19,21 +17,22 @@ Prerequisites: [`mise`](https://mise.jdx.dev/) manages the Bun
 toolchain version (see `.mise.toml`).
 
 ```bash
-mise install       # installs the pinned Bun version
+mise trust          # trust this repo's .mise.toml
+mise install        # installs the pinned Bun version
 bun install
 ```
 
-Build the single binary:
+Run from source:
 
 ```bash
-bun run build       # bun build --compile ./src/index.ts --outfile local-logs
-./local-logs --help
+bun run dev -- --config path/to/config.toml
 ```
 
-Or run from source without building:
+Or build the single binary:
 
 ```bash
-bun run src/index.ts --config path/to/config.toml
+bun run build
+./local-logs --help
 ```
 
 ### CLI usage
