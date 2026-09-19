@@ -1,10 +1,12 @@
 import { isAbsolute, join } from "node:path";
 import { parseConfig } from "./parse";
 import type { LoadedConfig, ResolvedSource } from "./types";
+import { defaultConfigPath, type XdgEnv } from "./xdg";
 
 export interface LoadConfigOptions {
   cwd: string;
   configPath?: string;
+  env?: XdgEnv;
 }
 
 async function resolveSourceFiles(pathOrGlob: string, cwd: string): Promise<string[]> {
@@ -26,12 +28,12 @@ async function resolveSourceFiles(pathOrGlob: string, cwd: string): Promise<stri
 }
 
 export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConfig> {
-  const { cwd } = options;
+  const { cwd, env = process.env as XdgEnv } = options;
   const configPath = options.configPath
     ? isAbsolute(options.configPath)
       ? options.configPath
       : join(cwd, options.configPath)
-    : join(cwd, "local-logs.toml");
+    : defaultConfigPath(env);
 
   const file = Bun.file(configPath);
   if (!(await file.exists())) {

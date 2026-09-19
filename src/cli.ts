@@ -15,7 +15,7 @@ export function parseArgs(argv: string[]): CliArgs {
   const program = new Command()
     .name("local-logs")
     .description("Local log viewer for development workflows")
-    .option("--config <path>", "path to local-logs.toml (defaults to ./local-logs.toml)")
+    .option("--config <path>", "path to config.toml (defaults to $XDG_CONFIG_HOME/local-logs/config.toml)")
     .exitOverride()
     .configureOutput({ writeErr: () => {} });
 
