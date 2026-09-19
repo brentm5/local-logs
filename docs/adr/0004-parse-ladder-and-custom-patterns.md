@@ -30,7 +30,13 @@ Custom regex goes *first*: a source that declares one knows its own format
 better than the generic parsers do.
 
 After the root is established, tags are merged on, `msg` is normalized to
-`message`, and well-known fields (`level`) are promoted to tags.
+`message`, and well-known fields (`level`) are promoted to tags. `level` is
+normalized onto one of five canonical values — `debug`, `info`, `warn`,
+`error`, `fatal` — folding common aliases (`trace`→`debug`, `warning`→`warn`,
+`err`→`error`, `critical`/`panic`→`fatal`); a record with no recognizable
+level defaults to `info` rather than leaving the field unset, since "no level
+detected" and "this is an info-level line" are indistinguishable in practice
+for the local-dev output this parses.
 
 Regex patterns are unvalidated in v1. A bad pattern simply fails to match and
 the line falls through to the next rung — degrading to raw rather than failing
