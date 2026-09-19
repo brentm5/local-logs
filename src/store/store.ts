@@ -66,25 +66,32 @@ export class Store {
       `SELECT source_id, inode, size, offset FROM offsets WHERE source_id = $source_id`,
     );
 
-    this.runInsertBatch = this.db.transaction((records: RecordInput[]) => {
-      for (const record of records) {
-        const { lastInsertRowid } = this.insertRecordStmt.run({
-          $ts: record.ts,
-          $source_id: record.sourceId,
-          $level: record.level,
-          $message: record.message,
-          $raw: record.raw,
-          $fields_json: JSON.stringify(record.fields),
-        });
-        const recordId = Number(lastInsertRowid);
+    // db.transaction() must wrap a function that closes over the prepared
+    // statements above, and those statements can't exist before `this.db`
+    // is open — so this has to be assembled here, after both are ready,
+    // rather than as a plain method (which would either re-prepare
+    // statements per call or need them passed in awkwardly).
+    this.runInsertBatch = this.db.transaction(this.insertBatchTx.bind(this));
+  }
 
-        this.insertFtsStmt.run({ $rowid: recordId, $message: record.message });
+  private insertBatchTx(records: RecordInput[]): void {
+    for (const record of records) {
+      const { lastInsertRowid } = this.insertRecordStmt.run({
+        $ts: record.ts,
+        $source_id: record.sourceId,
+        $level: record.level,
+        $message: record.message,
+        $raw: record.raw,
+        $fields_json: JSON.stringify(record.fields),
+      });
+      const recordId = Number(lastInsertRowid);
 
-        for (const [key, value] of Object.entries(record.tags)) {
-          this.insertTagStmt.run({ $record_id: recordId, $key: key, $value: value });
-        }
+      this.insertFtsStmt.run({ $rowid: recordId, $message: record.message });
+
+      for (const [key, value] of Object.entries(record.tags)) {
+        this.insertTagStmt.run({ $record_id: recordId, $key: key, $value: value });
       }
-    });
+    }
   }
 
   /** Access to the underlying bun:sqlite Database, for diagnostics/tests. */

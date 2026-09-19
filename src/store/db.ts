@@ -21,8 +21,8 @@ export function openDb(path: string): Database {
 
   const db = new Database(path, { create: true });
 
-  db.exec("PRAGMA auto_vacuum = INCREMENTAL;");
-  db.exec("PRAGMA journal_mode = WAL;");
+  db.run("PRAGMA auto_vacuum = INCREMENTAL;");
+  db.run("PRAGMA journal_mode = WAL;");
 
   initSchema(db);
 
