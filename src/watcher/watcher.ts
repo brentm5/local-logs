@@ -122,6 +122,11 @@ export class Watcher {
     this.started = false;
   }
 
+  /** Persists `tracked`'s current inode/offset alongside the file's now-known `size`. */
+  private persistOffset(tracked: TrackedFile, size: number): void {
+    this.store.setOffset({ sourceId: tracked.sourceId, inode: tracked.inode, size, offset: tracked.offset });
+  }
+
   private async rescanAll(): Promise<void> {
     await Promise.all(
       this.options.sources.map((source, sourceIndex) => this.rescanSource(sourceIndex, source, "rescan")),
@@ -135,12 +140,10 @@ export class Watcher {
     scanKind: "initial" | "rescan",
   ): Promise<void> {
     const files = await resolveSourceFiles(source.pattern, source.cwd);
-    for (const path of files) {
-      if (this.tracked.has(path)) {
-        continue;
-      }
-      await this.addFile(sourceIndex, path, source, scanKind);
-    }
+    const newFiles = files.filter((path) => !this.tracked.has(path));
+    // Each file's stat + optional initial read is independent of the others,
+    // so fan them out rather than adding them one at a time.
+    await Promise.all(newFiles.map((path) => this.addFile(sourceIndex, path, source, scanKind)));
   }
 
   /**
@@ -187,10 +190,11 @@ export class Watcher {
       changeQueue: Promise.resolve(),
     };
     this.tracked.set(path, tracked);
-    this.store.setOffset({ sourceId, inode: fileStat.inode, size: fileStat.size, offset: decision.readFrom });
 
     if (decision.readFrom < fileStat.size) {
       await this.readAppended(tracked, fileStat.size);
+    } else {
+      this.persistOffset(tracked, fileStat.size);
     }
 
     this.watchDirectoryOf(path);
@@ -263,12 +267,7 @@ export class Watcher {
     if (decision.readFrom < fileStat.size) {
       await this.readAppended(tracked, fileStat.size);
     } else {
-      this.store.setOffset({
-        sourceId: tracked.sourceId,
-        inode: tracked.inode,
-        size: fileStat.size,
-        offset: tracked.offset,
-      });
+      this.persistOffset(tracked, fileStat.size);
     }
   }
 
@@ -277,7 +276,10 @@ export class Watcher {
    * `READ_CHUNK_LIMIT` chunks (so a burst larger than the cap still gets
    * fully drained from one event, rather than stalling until the next
    * directory event arrives), and closes — never a persistent fd (see
-   * design notes).
+   * design notes). The offset is persisted once after the drain completes
+   * rather than per chunk, matching the batched-write tradeoff the store
+   * already makes for log records: a crash mid-drain re-emits at most one
+   * event's worth of already-emitted lines on restart.
    */
   private async readAppended(tracked: TrackedFile, endSize: number): Promise<void> {
     const handle = await open(tracked.path, "r");
@@ -285,7 +287,9 @@ export class Watcher {
       while (tracked.offset < endSize) {
         const length = Math.min(endSize - tracked.offset, READ_CHUNK_LIMIT);
 
-        const buffer = Buffer.alloc(length);
+        // allocUnsafe is fine here: `read` fills the buffer before it's used,
+        // and only the `bytesRead` bytes actually written are read back out.
+        const buffer = Buffer.allocUnsafe(length);
         const { bytesRead } = await handle.read(buffer, 0, length, tracked.offset);
         if (bytesRead <= 0) {
           break;
@@ -306,15 +310,12 @@ export class Watcher {
         }
 
         tracked.offset += bytesRead;
-        this.store.setOffset({
-          sourceId: tracked.sourceId,
-          inode: tracked.inode,
-          size: endSize,
-          offset: tracked.offset,
-        });
       }
     } finally {
       await handle.close();
+      // Persisted once per call rather than per chunk (even on a mid-loop
+      // throw, so progress already emitted is never re-emitted on resume).
+      this.persistOffset(tracked, endSize);
     }
   }
 }
