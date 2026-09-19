@@ -33,7 +33,7 @@ describe("openDb", () => {
     db.close();
   });
 
-  test("creates the records, tags, fts, and offsets tables", () => {
+  test("creates the log_records, tags, fts, and offsets tables", () => {
     const db = openDb(join(dir, "schema.db"));
 
     const tableNames = db
@@ -41,10 +41,10 @@ describe("openDb", () => {
       .all()
       .map((row) => (row as { name: string }).name);
 
-    expect(tableNames).toContain("records");
+    expect(tableNames).toContain("log_records");
     expect(tableNames).toContain("tags");
     expect(tableNames).toContain("offsets");
-    expect(tableNames).toContain("records_fts");
+    expect(tableNames).toContain("log_records_fts");
 
     db.close();
   });
@@ -57,8 +57,8 @@ describe("openDb", () => {
       .all()
       .map((row) => (row as { name: string }).name);
 
-    expect(indexNames).toContain("idx_records_ts");
-    expect(indexNames).toContain("idx_records_source_id_ts");
+    expect(indexNames).toContain("idx_log_records_ts");
+    expect(indexNames).toContain("idx_log_records_source_id_ts");
 
     db.close();
   });

@@ -8,11 +8,11 @@ import type { Database } from "bun:sqlite";
  * pragmas, not schema.
  */
 export function initSchema(db: Database): void {
-  // id: SQLite rowid alias (cheapest possible index; what records_fts joins
-  // against via its own rowid). Duplicate ingestion is prevented upstream by
-  // offset tracking (see `offsets` below and ADR-0003), not by a content
-  // hash here — two identical log lines are two real events, not one
-  // duplicated write.
+  // id: SQLite rowid alias (cheapest possible index; what log_records_fts
+  // joins against via its own rowid). Duplicate ingestion is prevented
+  // upstream by offset tracking (see `offsets` below and ADR-0003), not by
+  // a content hash here — two identical log lines are two real records, not
+  // one duplicated write.
   //
   // ts: UTC epoch, per SQLite convention (cheap arithmetic, compact index;
   // SQLite has no dedicated timestamp type).
@@ -27,16 +27,20 @@ export function initSchema(db: Database): void {
   // a declared JSON/JSONB column — SQLite has no dedicated JSON storage
   // class, and its JSON1 functions (json_extract, ->, ->>) work directly on
   // a TEXT column, including under an expression index, e.g.
-  // `SELECT fields_json ->> '$.status' FROM records` or
-  // `CREATE INDEX ... ON records (json_extract(fields_json, '$.status'))`.
+  // `SELECT fields_json ->> '$.status' FROM log_records` or
+  // `CREATE INDEX ... ON log_records (json_extract(fields_json, '$.status'))`.
   // So per-field querying into `fields` doesn't require a schema change.
   // JSONB (SQLite's binary JSON storage, >=3.45) would only be worth
   // revisiting if `fields_json` access becomes a measured hot path — it
   // trades ~3x faster re-parsing and a smaller on-disk footprint for
   // losing plain-text readability via `SELECT *`, and bun:sqlite doesn't
   // encode into it automatically.
+  //
+  // Table is `log_records`, not the bare `records`: specific to this
+  // domain's use of the word (CONTEXT.md's "Record") rather than a generic
+  // SQL noun.
   db.run(`
-    CREATE TABLE IF NOT EXISTS records (
+    CREATE TABLE IF NOT EXISTS log_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ts INTEGER NOT NULL,
       source_id TEXT NOT NULL,
@@ -49,17 +53,17 @@ export function initSchema(db: Database): void {
 
   db.run(`
     CREATE TABLE IF NOT EXISTS tags (
-      record_id INTEGER NOT NULL REFERENCES records(id),
+      log_record_id INTEGER NOT NULL REFERENCES log_records(id),
       key TEXT NOT NULL,
       value TEXT NOT NULL
     );
   `);
 
-  // Full-text index over message, kept separate from records so a search
-  // hit can be joined back to its row (contentless: the FTS index does not
-  // duplicate message text on disk, see ADR-0002).
+  // Full-text index over message, kept separate from log_records so a
+  // search hit can be joined back to its row (contentless: the FTS index
+  // does not duplicate message text on disk, see ADR-0002).
   db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
+    CREATE VIRTUAL TABLE IF NOT EXISTS log_records_fts USING fts5(
       message,
       content=''
     );
@@ -74,10 +78,10 @@ export function initSchema(db: Database): void {
     );
   `);
 
-  db.run(`CREATE INDEX IF NOT EXISTS idx_records_ts ON records (ts);`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_log_records_ts ON log_records (ts);`);
   db.run(
-    `CREATE INDEX IF NOT EXISTS idx_records_source_id_ts ON records (source_id, ts);`,
+    `CREATE INDEX IF NOT EXISTS idx_log_records_source_id_ts ON log_records (source_id, ts);`,
   );
-  db.run(`CREATE INDEX IF NOT EXISTS idx_tags_record_id ON tags (record_id);`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_tags_log_record_id ON tags (log_record_id);`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_tags_key_value ON tags (key, value);`);
 }

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { openDb } from "./db";
-import type { OffsetState, RecordInput, StoredRecord, Tags } from "./types";
+import type { LogRecordInput, OffsetState, StoredLogRecord, Tags } from "./types";
 
 const FLUSH_INTERVAL_MS = 100;
 const FLUSH_BATCH_SIZE = 500;
@@ -11,7 +11,7 @@ export interface TimeRangeQuery {
   sourceId?: string;
 }
 
-interface RecordRow {
+interface LogRecordRow {
   id: number;
   ts: number;
   source_id: string;
@@ -27,7 +27,7 @@ interface RecordRow {
  */
 export class Store {
   private readonly db: Database;
-  private readonly insertRecordStmt;
+  private readonly insertLogRecordStmt;
   private readonly insertFtsStmt;
   private readonly insertTagStmt;
   private readonly selectTagsStmt;
@@ -35,24 +35,24 @@ export class Store {
   private readonly selectOffsetStmt;
   private readonly runInsertBatch;
 
-  private queue: RecordInput[] = [];
+  private queue: LogRecordInput[] = [];
   private flushTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(path: string) {
     this.db = openDb(path);
 
-    this.insertRecordStmt = this.db.prepare(
-      `INSERT INTO records (ts, source_id, level, message, raw, fields_json)
+    this.insertLogRecordStmt = this.db.prepare(
+      `INSERT INTO log_records (ts, source_id, level, message, raw, fields_json)
        VALUES ($ts, $source_id, $level, $message, $raw, $fields_json)`,
     );
     this.insertFtsStmt = this.db.prepare(
-      `INSERT INTO records_fts (rowid, message) VALUES ($rowid, $message)`,
+      `INSERT INTO log_records_fts (rowid, message) VALUES ($rowid, $message)`,
     );
     this.insertTagStmt = this.db.prepare(
-      `INSERT INTO tags (record_id, key, value) VALUES ($record_id, $key, $value)`,
+      `INSERT INTO tags (log_record_id, key, value) VALUES ($log_record_id, $key, $value)`,
     );
     this.selectTagsStmt = this.db.prepare(
-      `SELECT key, value FROM tags WHERE record_id = $record_id`,
+      `SELECT key, value FROM tags WHERE log_record_id = $log_record_id`,
     );
     this.upsertOffsetStmt = this.db.prepare(
       `INSERT INTO offsets (source_id, inode, size, offset)
@@ -74,9 +74,9 @@ export class Store {
     this.runInsertBatch = this.db.transaction(this.insertBatchTx.bind(this));
   }
 
-  private insertBatchTx(records: RecordInput[]): void {
+  private insertBatchTx(records: LogRecordInput[]): void {
     for (const record of records) {
-      const { lastInsertRowid } = this.insertRecordStmt.run({
+      const { lastInsertRowid } = this.insertLogRecordStmt.run({
         $ts: record.ts,
         $source_id: record.sourceId,
         $level: record.level,
@@ -84,12 +84,12 @@ export class Store {
         $raw: record.raw,
         $fields_json: JSON.stringify(record.fields),
       });
-      const recordId = Number(lastInsertRowid);
+      const logRecordId = Number(lastInsertRowid);
 
-      this.insertFtsStmt.run({ $rowid: recordId, $message: record.message });
+      this.insertFtsStmt.run({ $rowid: logRecordId, $message: record.message });
 
       for (const [key, value] of Object.entries(record.tags)) {
-        this.insertTagStmt.run({ $record_id: recordId, $key: key, $value: value });
+        this.insertTagStmt.run({ $log_record_id: logRecordId, $key: key, $value: value });
       }
     }
   }
@@ -100,11 +100,11 @@ export class Store {
   }
 
   /**
-   * Writes a batch of records in one transaction. Use this directly for a
-   * caller-controlled batch, or `enqueue` for the time/size-triggered
+   * Writes a batch of log records in one transaction. Use this directly for
+   * a caller-controlled batch, or `enqueue` for the time/size-triggered
    * batching described in ADR-0003.
    */
-  async insertBatch(records: RecordInput[]): Promise<void> {
+  async insertBatch(records: LogRecordInput[]): Promise<void> {
     if (records.length === 0) {
       return;
     }
@@ -112,10 +112,10 @@ export class Store {
   }
 
   /**
-   * Buffers a record for the next automatic flush, which happens every
+   * Buffers a log record for the next automatic flush, which happens every
    * ~100ms or once 500 records have queued, whichever comes first.
    */
-  enqueue(record: RecordInput): void {
+  enqueue(record: LogRecordInput): void {
     this.queue.push(record);
 
     if (this.queue.length >= FLUSH_BATCH_SIZE) {
@@ -130,7 +130,7 @@ export class Store {
     }
   }
 
-  /** Flushes any queued records immediately, e.g. on shutdown. */
+  /** Flushes any queued log records immediately, e.g. on shutdown. */
   flush(): void {
     if (this.queue.length === 0) {
       return;
@@ -145,52 +145,52 @@ export class Store {
     }
   }
 
-  queryByTimeRange(query: TimeRangeQuery): StoredRecord[] {
+  queryByTimeRange(query: TimeRangeQuery): StoredLogRecord[] {
     const rows = query.sourceId
       ? (this.db
           .query(
             `SELECT id, ts, source_id, level, message, raw, fields_json
-             FROM records
+             FROM log_records
              WHERE ts >= $from AND ts <= $to AND source_id = $source_id
              ORDER BY ts ASC`,
           )
-          .all({ $from: query.from, $to: query.to, $source_id: query.sourceId }) as RecordRow[])
+          .all({ $from: query.from, $to: query.to, $source_id: query.sourceId }) as LogRecordRow[])
       : (this.db
           .query(
             `SELECT id, ts, source_id, level, message, raw, fields_json
-             FROM records
+             FROM log_records
              WHERE ts >= $from AND ts <= $to
              ORDER BY ts ASC`,
           )
-          .all({ $from: query.from, $to: query.to }) as RecordRow[]);
+          .all({ $from: query.from, $to: query.to }) as LogRecordRow[]);
 
     return rows.map((row) => this.hydrate(row));
   }
 
-  queryByTag(key: string, value: string): StoredRecord[] {
+  queryByTag(key: string, value: string): StoredLogRecord[] {
     const rows = this.db
       .query(
         `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
-         FROM records r
-         JOIN tags t ON t.record_id = r.id
+         FROM log_records r
+         JOIN tags t ON t.log_record_id = r.id
          WHERE t.key = $key AND t.value = $value
          ORDER BY r.ts ASC`,
       )
-      .all({ $key: key, $value: value }) as RecordRow[];
+      .all({ $key: key, $value: value }) as LogRecordRow[];
 
     return rows.map((row) => this.hydrate(row));
   }
 
-  queryByText(term: string): StoredRecord[] {
+  queryByText(term: string): StoredLogRecord[] {
     const rows = this.db
       .query(
         `SELECT r.id, r.ts, r.source_id, r.level, r.message, r.raw, r.fields_json
-         FROM records_fts f
-         JOIN records r ON r.id = f.rowid
+         FROM log_records_fts f
+         JOIN log_records r ON r.id = f.rowid
          WHERE f.message MATCH $term
          ORDER BY r.ts ASC`,
       )
-      .all({ $term: term }) as RecordRow[];
+      .all({ $term: term }) as LogRecordRow[];
 
     return rows.map((row) => this.hydrate(row));
   }
@@ -221,8 +221,8 @@ export class Store {
     });
   }
 
-  private hydrate(row: RecordRow): StoredRecord {
-    const tagRows = this.selectTagsStmt.all({ $record_id: row.id }) as {
+  private hydrate(row: LogRecordRow): StoredLogRecord {
+    const tagRows = this.selectTagsStmt.all({ $log_record_id: row.id }) as {
       key: string;
       value: string;
     }[];

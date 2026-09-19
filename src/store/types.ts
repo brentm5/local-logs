@@ -1,8 +1,8 @@
-/** A single tag key/value pair attached to a record. */
+/** A single tag key/value pair attached to a log record. */
 export type Tags = Record<string, string>;
 
-/** A record as accepted by the store's write API, before an id is assigned. */
-export interface RecordInput {
+/** A log record as accepted by the store's write API, before an id is assigned. */
+export interface LogRecordInput {
   ts: number;
   sourceId: string;
   level: string | null;
@@ -12,8 +12,8 @@ export interface RecordInput {
   tags: Tags;
 }
 
-/** A record as read back from the store. */
-export interface StoredRecord {
+/** A log record as read back from the store. */
+export interface StoredLogRecord {
   id: number;
   ts: number;
   sourceId: string;

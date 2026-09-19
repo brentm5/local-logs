@@ -3,9 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../src/store/store";
-import type { RecordInput } from "../../src/store/types";
+import type { LogRecordInput } from "../../src/store/types";
 
-function makeRecord(overrides: Partial<RecordInput> = {}): RecordInput {
+function makeRecord(overrides: Partial<LogRecordInput> = {}): LogRecordInput {
   return {
     ts: 1_000,
     sourceId: "src-1",
@@ -181,7 +181,7 @@ describe("Store", () => {
   describe("scale", () => {
     test("inserts 10k records across sources in batches and all three query types return correct results", async () => {
       const sources = ["svc-a", "svc-b", "svc-c"];
-      const batch: RecordInput[] = [];
+      const batch: LogRecordInput[] = [];
       for (let i = 0; i < 10_000; i++) {
         const sourceId = sources[i % sources.length]!;
         batch.push(
