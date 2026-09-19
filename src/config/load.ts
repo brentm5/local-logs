@@ -11,7 +11,7 @@ export interface LoadConfigOptions {
 
 const GLOB_METACHARACTERS = /[*?{}[\]]/;
 
-async function resolveSourceFiles(pathOrGlob: string, cwd: string): Promise<string[]> {
+export async function resolveSourceFiles(pathOrGlob: string, cwd: string): Promise<string[]> {
   if (GLOB_METACHARACTERS.test(pathOrGlob)) {
     const glob = new Bun.Glob(pathOrGlob);
     const matches: string[] = [];
