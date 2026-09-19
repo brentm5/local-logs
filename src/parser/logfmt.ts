@@ -17,13 +17,11 @@ export function parseLogfmt(line: string): Record<string, string> | null {
   }
 
   const result: Record<string, string> = {};
-  let matchedAny = false;
   let matchedPair = false;
 
   PAIR_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = PAIR_PATTERN.exec(trimmed)) !== null) {
-    matchedAny = true;
     const [, dqKey, dqValue, sqValue, bareValue, boolKey] = match;
 
     if (dqKey !== undefined) {
@@ -37,7 +35,7 @@ export function parseLogfmt(line: string): Record<string, string> | null {
 
   // Require at least one real `key=value` pair; a line of only bare words
   // (which also satisfies PAIR_PATTERN) isn't logfmt, it's plain text.
-  if (!matchedAny || !matchedPair) {
+  if (!matchedPair) {
     return null;
   }
 
