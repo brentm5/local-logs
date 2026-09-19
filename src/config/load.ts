@@ -1,4 +1,4 @@
-import { isAbsolute, join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseConfig } from "./parse";
 import type { LoadedConfig, ResolvedSource } from "./types";
 import { defaultConfigPath, type XdgEnv } from "./xdg";
@@ -9,18 +9,22 @@ export interface LoadConfigOptions {
   env?: XdgEnv;
 }
 
+const GLOB_METACHARACTERS = /[*?{}[\]]/;
+
 async function resolveSourceFiles(pathOrGlob: string, cwd: string): Promise<string[]> {
-  const glob = new Bun.Glob(pathOrGlob);
-  const matches: string[] = [];
-  for await (const match of glob.scan({ cwd, absolute: false })) {
-    matches.push(join(cwd, match));
-  }
-  if (matches.length > 0) {
-    return matches.sort();
+  if (GLOB_METACHARACTERS.test(pathOrGlob)) {
+    const glob = new Bun.Glob(pathOrGlob);
+    const matches: string[] = [];
+    for await (const match of glob.scan({ cwd, absolute: false })) {
+      matches.push(join(cwd, match));
+    }
+    if (matches.length > 0) {
+      return matches.sort();
+    }
   }
 
   // Not a glob pattern (or matched nothing): treat as a literal path if it exists.
-  const literal = isAbsolute(pathOrGlob) ? pathOrGlob : join(cwd, pathOrGlob);
+  const literal = resolve(cwd, pathOrGlob);
   if (await Bun.file(literal).exists()) {
     return [literal];
   }
@@ -30,9 +34,7 @@ async function resolveSourceFiles(pathOrGlob: string, cwd: string): Promise<stri
 export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConfig> {
   const { cwd, env = process.env as XdgEnv } = options;
   const configPath = options.configPath
-    ? isAbsolute(options.configPath)
-      ? options.configPath
-      : join(cwd, options.configPath)
+    ? resolve(cwd, options.configPath)
     : defaultConfigPath(env);
 
   const file = Bun.file(configPath);
@@ -49,11 +51,12 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
 
   const config = parseConfig(raw);
 
-  const resolvedSources: ResolvedSource[] = [];
-  for (const source of config.sources) {
-    const files = await resolveSourceFiles(source.path, cwd);
-    resolvedSources.push({ ...source, files });
-  }
+  const resolvedSources: ResolvedSource[] = await Promise.all(
+    config.sources.map(async (source) => ({
+      ...source,
+      files: await resolveSourceFiles(source.path, cwd),
+    })),
+  );
 
   const totalFiles = resolvedSources.reduce((sum, s) => sum + s.files.length, 0);
   if (totalFiles > config.server.max_files) {

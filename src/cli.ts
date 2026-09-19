@@ -22,7 +22,7 @@ export function parseArgs(argv: string[]): CliArgs {
   try {
     program.parse(argv, { from: "user" });
   } catch (err) {
-    if (err instanceof CommanderError && (err.code === "commander.helpDisplayed" || err.code === "commander.version")) {
+    if (err instanceof CommanderError && err.exitCode === 0) {
       throw new CliExit();
     }
     throw err;
